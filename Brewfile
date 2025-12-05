@@ -1,0 +1,61 @@
+tap "mtgto/macskk"
+
+brew "zstd"
+brew "bat"
+brew "doxygen"
+brew "dpkg"
+brew "fd"
+brew "fzf"
+brew "gh"
+brew "git"
+brew "gnu-sed"
+brew "gnupg"
+brew "graphviz"
+brew "htop"
+brew "lima"
+brew "mise"
+brew "neovim"
+brew "pgcli"
+brew "postgresql@14", restart_service: :changed
+brew "ripgrep"
+brew "tree"
+brew "wget"
+brew "yarn"
+brew "zip"
+
+cask "clipy"
+cask "google-chrome"
+cask "iterm2"
+cask "karabiner-elements"
+cask "macskk"
+cask "powershell"
+cask "visual-studio-code"
+
+vscode "alexandernanberg.horizon-theme-vscode"
+vscode "antfu.theme-vitesse"
+vscode "editorconfig.editorconfig"
+vscode "jdinhlife.gruvbox"
+vscode "mohdzaid.vscode-cursor-theme"
+vscode "juanmnl.vscode-theme-1984"
+
+vscode "ms-vscode-remote.remote-containers"
+vscode "ms-vscode-remote.remote-ssh"
+vscode "ms-vscode-remote.remote-ssh-edit"
+vscode "ms-vscode.remote-explorer"
+
+vscode "anthropic.claude-code"
+vscode "github.copilot"
+vscode "github.copilot-chat"
+
+vscode "github.github-vscode-theme"
+vscode "github.vscode-github-actions"
+vscode "github.vscode-pull-request-github"
+
+vscode "ms-dotnettools.csdevkit"
+vscode "ms-dotnettools.csharp"
+vscode "ms-dotnettools.vscode-dotnet-runtime"
+
+vscode "rust-lang.rust-analyzer"
+vscode "tamasfe.even-better-toml"
+
+# vim: set ft=ruby ts=2 sw=2 et :
