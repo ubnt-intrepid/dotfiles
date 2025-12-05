@@ -21,6 +21,12 @@ fpath=(
 # setup homebrew if exists
 (( $+commands[brew] )) && eval "$(brew shellenv)"
 
+# setup $EDITOR
+if [[ -z "$EDITOR" && -x "$(command -v nvim)" ]]; then
+  export EDITOR="${EDITOR:-nvim}"
+  export SUDO_EDITOR="$EDITOR"
+fi
+
 
 # --- general configuration ---
 bindkey -v
@@ -45,7 +51,6 @@ alias g=git
 alias l="ls -al"
 alias ls="ls --color=always"
 alias q=exit
-
 
 # --- mise ---
 if (( $+commands[mise] )); then
