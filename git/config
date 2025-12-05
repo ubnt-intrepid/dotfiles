@@ -1,0 +1,66 @@
+[alias]
+  ar  = archive
+  br  = branch
+  cl  = clone
+  clr = clone --recursive
+  cm  = commit
+  co  = checkout
+  cot = "!sh -c 'git checkout -t origin/$1' -"
+  df  = diff
+  dfi = diff --cached
+  fa  = fetch --all
+  pl  = pull
+  ps  = push
+  sm  = submodule
+  ss  = stash
+  st  = status --short --branch
+  sw  = switch
+  swc = switch -c
+
+  branches  = branch -a
+  tags      = tag
+  stashes   = stash list
+  unstage   = reset -q HEAD --
+  discard   = checkout --
+  uncommit  = reset --mixed HEAD~
+  amend     = commit --amend
+  graph     = log --graph --all --format=format:'%Cgreen%h %Creset• %<(40,trunc)%s (%cN, %cr) %Cred%d'
+
+[core]
+  preloadindex  = true
+  fscache       = true
+  editor        = ${EDITOR:-vi}
+  autocrlf      = input
+  safecrlf      = false
+  symlinks      = true
+
+[merge]
+  ff    = false
+  tool  = vimdiff
+
+[diff]
+  renames = true
+
+[i18n]
+  filesEncoding = utf-8
+
+[init]
+  defaultBranch = main
+
+[push]
+  default = current
+
+[pull]
+  rebase = true
+
+[url "git@github.com:"]
+  pushinsteadof = https://github.com/
+
+[url "git@gitlab.com:"]
+  pushinsteadof = https://gitlab.com/
+
+[user]
+  name = Yusuke Sasaki
+  email = ubnt.intrepid@gmail.com
+
+# vim: set ft=gitconfig ts=2 sw=2 et :
