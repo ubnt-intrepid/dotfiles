@@ -24,7 +24,7 @@ fpath=(
 # setup $EDITOR
 if [[ -z "$EDITOR" && -x "$(command -v nvim)" ]]; then
   export EDITOR="${EDITOR:-nvim}"
-  export SUDO_EDITOR="$EDITOR"
+  export SUDO_EDITOR="$(command -v nvim)"
 fi
 
 

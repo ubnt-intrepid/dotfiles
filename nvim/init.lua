@@ -48,6 +48,7 @@ end
 -- Setup lazy.nvim
 require("lazy").setup({
   'nvim-lualine/lualine.nvim',
+  'lewis6991/gitsigns.nvim',
   { "ellisonleao/gruvbox.nvim", priority = 1000, config = true }
 })
 
