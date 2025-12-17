@@ -17,3 +17,12 @@
   # Windows (PowerShell)
   TODO
   ```
+* For macOS environment:
+  ```sh
+  # install Homebrew
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  # install formula
+  cd ~/.dotfiles
+  brew bundle
+  ```
