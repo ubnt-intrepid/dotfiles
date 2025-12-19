@@ -2,10 +2,8 @@
   ar  = archive
   br  = branch
   cl  = clone
-  clr = clone --recursive
   cm  = commit
   co  = checkout
-  cot = "!sh -c 'git checkout -t origin/$1' -"
   df  = diff
   dfi = diff --cached
   fa  = fetch --all
@@ -16,6 +14,7 @@
   st  = status --short --branch
   sw  = switch
   swc = switch -c
+  wt  = worktree
 
   branches  = branch -a
   tags      = tag
@@ -47,11 +46,15 @@
 [init]
   defaultBranch = main
 
+[fetch]
+  prune = true
+
 [push]
   default = current
 
 [pull]
-  rebase = true
+  ff = only
+  prune = true
 
 [url "git@github.com:"]
   pushinsteadof = https://github.com/
