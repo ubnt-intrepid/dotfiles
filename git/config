@@ -32,6 +32,7 @@
   autocrlf      = input
   safecrlf      = false
   symlinks      = true
+  pager         = delta
 
 [merge]
   ff    = false
@@ -55,6 +56,18 @@
 [pull]
   ff = only
   prune = true
+
+[interactive]
+  diffFilter = delta --color-only
+
+[delta]
+  dark = true
+  navigate = true
+  line-numbers = true
+  hyperlinks = true
+
+[merge]
+  conflictStyle = zdiff3
 
 [url "git@github.com:"]
   pushinsteadof = https://github.com/
