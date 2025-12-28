@@ -1,6 +1,7 @@
 {
     "git": "~/.config/git",
     "ghostty": "~/.config/ghostty",
+    "mise": "~/.config/mise",
     "nvim": "~/.config/nvim",
 
     "claude/CLAUDE.md": "~/.claude/CLAUDE.md",
