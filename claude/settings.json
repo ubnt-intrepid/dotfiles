@@ -27,5 +27,10 @@
   },
   "enabledPlugins": {},
   "outputStyle": "Learning",
-  "promptSuggestionEnabled": false
+  "promptSuggestionEnabled": false,
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh",
+    "padding": 0
+  }
 }
