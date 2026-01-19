@@ -7,6 +7,7 @@ path=(
   $HOME/.local/bin(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.dotnet/tools(N-/)
+  $HOME/.opencode/bin(N-/)
   /opt/homebrew/bin(N-/)
   $path(N-/)
 )
