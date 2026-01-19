@@ -15,4 +15,4 @@ window-padding-balance = true
 
 macos-titlebar-style = "tabs"
 
-keybind = ctrl+[=ignore
+keybind = ctrl+left_bracket=ignore
