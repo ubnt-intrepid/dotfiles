@@ -1,0 +1,11 @@
+[metadata]
+name = "rhq"
+description = "Browse the local repositoriy list"
+requirements = ["rhq"]
+
+[source]
+command = "rhq list"
+
+[preview]
+command = "[[ -f '{0}'/README.md ]] && cat '{0}'/README.md || true"
+

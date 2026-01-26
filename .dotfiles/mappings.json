@@ -3,6 +3,7 @@
     "ghostty": "~/.config/ghostty",
     "mise": "~/.config/mise",
     "nvim": "~/.config/nvim",
+    "television": "~/.config/television",
 
     "claude/CLAUDE.md": "~/.claude/CLAUDE.md",
     "claude/settings.json": "~/.claude/settings.json",
