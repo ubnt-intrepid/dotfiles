@@ -7,5 +7,5 @@ requirements = ["rhq"]
 command = "rhq list"
 
 [preview]
-command = "[[ -f '{0}'/README.md ]] && cat '{0}'/README.md || true"
-
+command = "bat -n --color=always '{}'/README.md || true"
+env = { BAT_THEME = "ansi" }
