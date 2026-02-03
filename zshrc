@@ -37,6 +37,7 @@ setopt extended_glob
 setopt noprompt_subst
 setopt nonomatch
 
+export LESS='-R'  # use ANSI escape sequences
 
 # --- history configuration ---
 export HISTSIZE=1000
