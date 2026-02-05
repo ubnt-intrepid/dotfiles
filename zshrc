@@ -67,7 +67,7 @@ if (( $+commands[fzf] )); then
 
   if (( $+commands[rhq] )); then
     function __fuzzy_select_repositories() {
-      local selected=$(rhq list | fzf --prompt='REPOS> ' --query="$LBUFFER")
+      local selected=$(rhq list | sort | fzf --prompt='REPOS> ' --query="$LBUFFER")
       if [[ -n $selected ]]; then
         BUFFER="cd \"${selected}\""
         zle accept-line
