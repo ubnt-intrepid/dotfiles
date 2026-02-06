@@ -1,6 +1,6 @@
 theme = "TokyoNight Moon"
+
 font-family = "Moralerspace Argon HW"
-font-size = 15
 
 background-opacity = 0.92
 
@@ -13,6 +13,4 @@ window-padding-x = 10
 window-padding-y = 10
 window-padding-balance = true
 
-macos-titlebar-style = "tabs"
-
-keybind = ctrl+left_bracket=ignore
+config-file = ?config.local
