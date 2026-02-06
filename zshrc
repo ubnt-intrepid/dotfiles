@@ -3,18 +3,18 @@
 # --- path configuration ---
 typeset -aU path
 path=(
-  ${ASDF_DATA_DIR:-$HOME/.asdf}/shims(N-/)
-  $HOME/.local/bin(N-/)
+  $HOME/.nix-profile/bin(N-/)
+  /nix/var/nix/profiles/default/bin(N-/)
+  /opt/homebrew/bin(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.dotnet/tools(N-/)
   $HOME/.opencode/bin(N-/)
-  /opt/homebrew/bin(N-/)
+  $HOME/.local/bin(N-/)
   $path(N-/)
 )
 
 typeset -aU fpath
 fpath=(
-  ${ASDF_DATA_DIR:-$HOME/.asdf}/completions(N-/)
   ${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions(N-/)
   $fpath(N-/)
 )
