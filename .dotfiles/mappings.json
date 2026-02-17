@@ -4,6 +4,6 @@
     "mise": "~/.config/mise",
     "nvim": "~/.config/nvim",
 
-    "claude/CLAUDE.md": "~/.claude/CLAUDE.md",
-    "claude/settings.json": "~/.claude/settings.json"
+    "claude/settings.json": "~/.claude/settings.json",
+    "claude/statusline.sh": "~/.claude/statusline.sh"
 }
