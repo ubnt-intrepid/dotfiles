@@ -11,7 +11,6 @@ path=(
   $HOME/.dotnet/tools(N-/)
   $HOME/.opencode/bin(N-/)
   $HOME/.local/bin(N-/)
-  $HOME/.local/vscode/bin(N-/)
 )
 
 typeset -aU fpath
