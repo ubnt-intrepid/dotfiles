@@ -47,8 +47,8 @@ format_duration() {
 
 # Build statusline parts
 parts=("[$MODEL]")
-[[ -n $BRANCH ]] && parts+=("$BRANCH")
 parts+=("$CUR_DIR_NAME")
+[[ -n $BRANCH ]] && parts+=("$BRANCH")
 parts+=("Context: ${PERCENT_USED}% (In:$(format_tokens "$TOTAL_IN") Out:$(format_tokens "$TOTAL_OUT"))")
 parts+=("$(format_duration "$DURATION_MS")")
 
