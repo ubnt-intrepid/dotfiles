@@ -1,15 +1,18 @@
 #!/bin/bash
 input=$(cat)
 
-MODEL=$(echo "$input" | jq -r '.model.display_name')
-CONTEXT_SIZE=$(echo "$input" | jq -r '.context_window.context_window_size')
+IFS=$'\t' read -r MODEL CONTEXT_SIZE CURRENT_TOKENS <<< "$(echo "$input" | jq -r '
+  .context_window.current_usage as $usage |
+  [
+    .model.display_name,
+    .context_window.context_window_size,
+    (if $usage != null then
+      ($usage.input_tokens + $usage.cache_creation_input_tokens + $usage.cache_read_input_tokens)
+    else
+      0
+    end)
+  ] | @tsv
+')"
 
-USAGE=$(echo "$input" | jq '.context_window.current_usage')
-if [ "$USAGE" != "null" ]; then
-    # Calculate current context from current_usage fields
-    CURRENT_TOKENS=$(echo "$USAGE" | jq '.input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens')
-    PERCENT_USED=$((CURRENT_TOKENS * 100 / CONTEXT_SIZE))
-    echo "[$MODEL] Context: ${PERCENT_USED}%"
-else
-    echo "[$MODEL] Context: 0%"
-fi
+PERCENT_USED=$((CURRENT_TOKENS * 100 / CONTEXT_SIZE))
+echo "[$MODEL] Context: ${PERCENT_USED}%"
