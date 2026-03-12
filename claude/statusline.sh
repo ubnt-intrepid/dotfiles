@@ -1,6 +1,11 @@
 #!/bin/bash
 input=$(cat)
 
+if ! command -v jq &>/dev/null; then
+  echo "[statusline: jq is required but not installed]"
+  exit 0
+fi
+
 # Extract all fields from JSON in a single jq call
 IFS=$'\t' read -r MODEL CONTEXT_SIZE CURRENT_TOKENS TOTAL_IN TOTAL_OUT DURATION_MS CUR_DIR <<< "$(echo "$input" | jq -r '
   .context_window.current_usage as $usage |
