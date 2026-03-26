@@ -8,8 +8,6 @@ path=(
   /opt/homebrew/bin(N-/)
   $path(N-/)
   $HOME/.cargo/bin(N-/)
-  $HOME/.dotnet/tools(N-/)
-  $HOME/.opencode/bin(N-/)
   $HOME/.local/bin(N-/)
 )
 
