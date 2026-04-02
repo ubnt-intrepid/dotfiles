@@ -25,6 +25,13 @@
   amend     = commit --amend
   graph     = log --graph --all --format=format:'%Cgreen%h %Creset• %<(40,trunc)%s (%cN, %cr) %Cred%d'
 
+; for difftastic
+  ddiff = -c diff.external=difft diff
+  dlog  = -c diff.external=difft log --ext-diff
+  dshow = -c diff.external=difft show --ext-diff
+  ddf   = ddiff
+  ddfi  = ddiff --cached
+
 [core]
   preloadindex  = true
   fscache       = true
@@ -37,10 +44,6 @@
   ff    = false
   tool  = vimdiff
   conflictStyle = zdiff3
-
-[diff]
-  external = difft
-  renames = true
 
 [i18n]
   filesEncoding = utf-8
