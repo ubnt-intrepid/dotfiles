@@ -1,5 +1,4 @@
-# macOS-specific configurations (example)
+# platform-specific configurations (example)
 
 macos-titlebar-style = "tabs"
-
 keybind = ctrl+left_bracket=ignore
