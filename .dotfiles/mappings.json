@@ -2,9 +2,5 @@
     "git": "~/.config/git",
     "ghostty": "~/.config/ghostty",
     "mise": "~/.config/mise",
-    "nvim": "~/.config/nvim",
-
-    "claude/settings.json": "~/.claude/settings.json",
-    "claude/statusline.sh": "~/.claude/statusline.sh",
-    "claude/skills": "~/.claude/skills"
+    "nvim": "~/.config/nvim"
 }
