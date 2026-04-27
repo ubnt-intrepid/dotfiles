@@ -9,6 +9,7 @@ path=(
   $path(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.local/bin(N-/)
+  $HOME/.dotnet/tools(N-/)
 )
 
 typeset -aU fpath
