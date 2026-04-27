@@ -1,8 +1,11 @@
 # zshrc
 
+export DOTFILES_REPO_PATH="${${(%):-%x}:A:h}"
+
 # --- path configuration ---
 typeset -aU path
 path=(
+  $DOTFILES_REPO_PATH/bin(N-/)
   $HOME/.nix-profile/bin(N-/)
   /nix/var/nix/profiles/default/bin(N-/)
   /opt/homebrew/bin(N-/)

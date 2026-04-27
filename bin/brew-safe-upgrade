@@ -1,0 +1,155 @@
+#!/usr/bin/env ruby
+#
+# brew-safe-upgrade: 熟成期間を過ぎたパッケージのみアップグレードする
+#
+# 使い方:
+#   brew-safe-upgrade [options] [パッケージ名...]
+#   brew-safe-upgrade --help  でオプション一覧を表示
+#
+# 参考: https://zenn.dev/noprogllama/articles/ecd055e7b4d98c#homebrew
+
+require 'net/http'
+require 'json'
+require 'time'
+require 'uri'
+require 'open3'
+require 'optparse'
+
+def collect_outdated(flag)
+  out, = Open3.capture2('brew', 'outdated', flag, '--quiet')
+  out.split
+rescue => e
+  warn "brew outdated #{flag} failed: #{e}"
+  []
+end
+
+def fetch_json(url, limit = 5)
+  raise "リダイレクト上限超過" if limit == 0
+
+  uri = URI(url)
+  res = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') do |http|
+    http.get(uri.request_uri, 'User-Agent' => 'brew-safe-upgrade/1.0')
+  end
+
+  case res
+  when Net::HTTPSuccess
+    JSON.parse(res.body)
+  when Net::HTTPRedirection
+    fetch_json(URI.join(url, res['location']).to_s, limit - 1)
+  end
+rescue => e
+  warn "fetch failed (#{url}): #{e}"
+  nil
+end
+
+def github_commit_date(repo, filepath, gh_available)
+  if gh_available
+    out, status = Open3.capture2('gh', 'api', "repos/#{repo}/commits?path=#{filepath}&per_page=1")
+    unless status.success?
+      warn "gh api failed (#{repo}/#{filepath})"
+      return nil
+    end
+    JSON.parse(out)&.first&.dig('commit', 'committer', 'date')
+  else
+    fetch_json("https://api.github.com/repos/#{repo}/commits?path=#{filepath}&per_page=1")
+      &.first&.dig('commit', 'committer', 'date')
+  end
+rescue => e
+  warn "github_commit_date failed (#{repo}/#{filepath}): #{e}"
+  nil
+end
+
+options = { dry_run: false, maturity_days: 7 }
+OptionParser.new do |o|
+  o.banner = 'Usage: brew-safe-upgrade [options] [パッケージ名...]'
+  o.on('--dry-run', '実際にはアップグレードしない')          { options[:dry_run] = true }
+  o.on('--maturity-days N', Integer, '熟成期間（日数）。デフォルト: 7') { |n| options[:maturity_days] = n }
+end.parse!
+
+dry_run       = options[:dry_run]
+maturity_days = options[:maturity_days]
+gh_available  = !!system('gh', '--version', out: File::NULL, err: File::NULL)
+now           = Time.now.to_i
+
+puts "=== brew-safe-upgrade (熟成期間: #{maturity_days}日) ==="
+puts
+
+puts "formulae情報を更新中..."
+system('brew', 'update', '--quiet')
+
+packages =
+  if ARGV.any?
+    ARGV.map { |name| { name: name, cask: false } }
+  else
+    [['--formula', false], ['--cask', true]].flat_map do |flag, cask|
+      collect_outdated(flag).map { |name| { name: name, cask: cask } }
+    end
+  end
+
+if packages.empty?
+  puts "アップグレード対象のパッケージはありません。"
+  exit 0
+end
+
+upgrade_list = []
+skip_list    = []
+
+packages.each do |pkg|
+  name    = pkg[:name]
+  is_cask = pkg[:cask]
+
+  if is_cask
+    data           = fetch_json("https://formulae.brew.sh/api/cask/#{name}.json")
+    latest_version = data&.dig('version') || '?'
+    repo           = 'Homebrew/homebrew-cask'
+    filepath       = "Casks/#{name[0]}/#{name}.rb"
+    commit_date    = nil
+  else
+    data           = fetch_json("https://formulae.brew.sh/api/formula/#{name}.json")
+    latest_version = data&.dig('versions', 'stable') || '?'
+    repo           = 'Homebrew/homebrew-core'
+    filepath       = "Formula/#{name[0]}/#{name}.rb"
+    commit_date    = data&.dig('versions_updated_at')
+  end
+
+  commit_date = github_commit_date(repo, filepath, gh_available) if commit_date.to_s.empty?
+
+  if commit_date.to_s.empty?
+    puts "  ⚠ #{name}: リリース日取得不可 → スキップ"
+    skip_list << "#{name}(日付不明)"
+    next
+  end
+
+  age_days = (now - Time.parse(commit_date).to_i) / 86400
+
+  if age_days >= maturity_days
+    puts "  ✓ #{name}: #{latest_version} (#{age_days}日経過) → アップグレード対象"
+    upgrade_list << pkg
+  else
+    remaining = maturity_days - age_days
+    puts "  ✗ #{name}: #{latest_version} (#{age_days}日経過) → 熟成待ち (あと#{remaining}日)"
+    skip_list << "#{name}(#{age_days}日)"
+  end
+end
+
+puts
+puts "=== 結果 ==="
+puts "アップグレード: #{upgrade_list.size}件"
+puts "スキップ:       #{skip_list.size}件"
+
+exit 0 if upgrade_list.empty?
+
+puts
+if dry_run
+  puts "[dry-run] 以下がアップグレードされます:"
+  upgrade_list.each { |pkg| puts "  #{pkg[:name]}#{' (cask)' if pkg[:cask]}" }
+else
+  puts "アップグレード実行中..."
+  by_type    = upgrade_list.group_by { |pkg| pkg[:cask] }
+  names      = by_type.fetch(false, []).map { |pkg| pkg[:name] }
+  cask_names = by_type.fetch(true,  []).map { |pkg| pkg[:name] }
+  failed  = false
+  failed |= !system('brew', 'upgrade', *names)                  unless names.empty?
+  failed |= !system('brew', 'upgrade', '--cask', *cask_names)   unless cask_names.empty?
+  exit 1 if failed
+end
