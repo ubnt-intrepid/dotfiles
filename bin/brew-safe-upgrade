@@ -103,16 +103,14 @@ packages.each do |pkg|
     latest_version = data&.dig('version') || '?'
     repo           = 'Homebrew/homebrew-cask'
     filepath       = "Casks/#{name[0]}/#{name}.rb"
-    commit_date    = nil
   else
     data           = fetch_json("https://formulae.brew.sh/api/formula/#{name}.json")
     latest_version = data&.dig('versions', 'stable') || '?'
     repo           = 'Homebrew/homebrew-core'
     filepath       = "Formula/#{name[0]}/#{name}.rb"
-    commit_date    = data&.dig('versions_updated_at')
   end
 
-  commit_date = github_commit_date(repo, filepath, gh_available) if commit_date.to_s.empty?
+  commit_date = github_commit_date(repo, filepath, gh_available)
 
   if commit_date.to_s.empty?
     puts "  ⚠ #{name}: リリース日取得不可 → スキップ"
