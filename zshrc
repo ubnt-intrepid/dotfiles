@@ -9,6 +9,7 @@ path=(
   $HOME/.nix-profile/bin(N-/)
   /nix/var/nix/profiles/default/bin(N-/)
   /opt/homebrew/bin(N-/)
+  /opt/homebrew/opt/curl/bin(N-/) # workaround: macOS標準の curl ではなく、Homebrew 版を優先的に用いる
   $path(N-/)
   $HOME/.cargo/bin(N-/)
   $HOME/.local/bin(N-/)

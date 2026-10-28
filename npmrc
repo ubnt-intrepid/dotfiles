@@ -3,3 +3,4 @@ audit=true
 min-release-age=7
 save-exact=true
 allow-git=root
+registry=https://npm.flatt.tech/
