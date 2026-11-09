@@ -1,10 +1,32 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
+
 #
 # brew-safe-upgrade: 熟成期間を過ぎたパッケージのみアップグレードする
 #
 # 使い方:
-#   brew-safe-upgrade [options] [パッケージ名...]
-#   brew-safe-upgrade --help  でオプション一覧を表示
+#   brew safe-upgrade [options] [パッケージ名...]   (brew-safe-upgrade として直接実行も可)
+#   brew safe-upgrade --help  でオプション一覧を表示
+#
+# 熟成期間の起点:
+#   現在の版 (version / revision / ソースの url・sha256) が tap に入ったコミットの日時。
+#   bottle の再ビルドや livecheck の変更など、配布物の中身が変わらないコミットでは時計をリセットしない。
+#
+# ゼロデイ対応 (熟成期間の短縮):
+#   自動: インストール済みの版に HIGH / CRITICAL の既知脆弱性があり (brew vulns)、
+#         新しい版でそれが解消されていることを OSV.dev で確認できた場合、熟成期間を 1 日に短縮する。
+#         それ以外の深刻度 (UNKNOWN を含む) や解消を確認できない場合は警告のみ。
+#   手動: --expedite <pkg> --reason <理由> で、その実行に限り熟成期間を 0 日にする。
+#
+# 手動対応パッケージ (MANUAL_PACKAGES):
+#   熟成期間より短い間隔でのリリースが常態化しているパッケージは、最新版が熟成期間に達する日が
+#   ほぼ来ない (Homebrew は最新版しか配布しないため)。これらは自動判定の対象外とし、
+#   実行後に一覧で手動対応を促す。更新する場合は --expedite で明示的に指定する。
+#
+# 判定と実行の一貫性:
+#   判定は冒頭の brew update 時点のデータで行い、upgrade 中は auto-update を止めてデータを固定する。
+#   upgrade 後に判定した版が実際に入ったかを照合する。
+#   アップグレード履歴は $XDG_STATE_HOME/brew-safe-upgrade/history.jsonl に記録する。
 #
 # 参考: https://zenn.dev/noprogllama/articles/ecd055e7b4d98c#homebrew
 
@@ -14,140 +36,592 @@ require 'time'
 require 'uri'
 require 'open3'
 require 'optparse'
+require 'fileutils'
+
+# 熟成期間による自動判定の対象外とし、手動対応とするパッケージ (formula / cask の名前)
+MANUAL_PACKAGES = %w[
+  mise
+].freeze
+
+COMMAND_NAME = 'brew safe-upgrade'
+USER_AGENT = 'brew-safe-upgrade/1.0'
+# 自動短縮時の熟成期間 (日)
+SECURITY_EXPEDITE_DAYS = 1
+# 自動短縮の対象とする深刻度
+EXPEDITE_SEVERITIES = %w[HIGH CRITICAL].freeze
+# 版の導入コミットを探すときに遡るコミット数の上限
+COMMIT_SCAN_LIMIT = 30
+STATE_DIR = File.join(ENV.fetch('XDG_STATE_HOME', File.expand_path('~/.local/state')), 'brew-safe-upgrade')
+HISTORY_FILE = File.join(STATE_DIR, 'history.jsonl')
+SECONDS_PER_DAY = 86_400
+
+# 版の比較から除外するブロック: bottle (bottle の sha256) と livecheck (更新検知用の url)
+IGNORED_BLOCKS = /^(?<indent>[ \t]*)(?:bottle|livecheck) do\b.*?^\k<indent>end$/m.freeze
+# 配布物の中身を決める行
+FINGERPRINT_LINE = /^[ \t]*(?:url|version|revision|sha256)\b.*$/.freeze
+
+# ---------------------------------------------------------------------------
+# brew
 
 def collect_outdated(flag)
   out, = Open3.capture2('brew', 'outdated', flag, '--quiet')
   out.split
-rescue => e
+rescue StandardError => e
   warn "brew outdated #{flag} failed: #{e}"
   []
 end
 
-def fetch_json(url, limit = 5)
-  raise "リダイレクト上限超過" if limit == 0
+# tap 名 (例: "homebrew/core", "user/foo") を GitHub リポジトリ名に変換する
+def github_repo_for_tap(tap)
+  user, repo = tap.to_s.split('/', 2)
+  return nil if user.to_s.empty? || repo.to_s.empty?
 
-  uri = URI(url)
-  res = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') do |http|
-    http.get(uri.request_uri, 'User-Agent' => 'brew-safe-upgrade/1.0')
-  end
+  "#{user}/homebrew-#{repo}"
+end
 
+# brew info から判定に必要な情報を取得する。
+# ファイルパスは自前で組み立てず ruby_source_path を使う
+# (Formula/lib/*, Casks/font/font-*/* などのシャーディング規則やサードパーティ tap に対応するため)
+def brew_info(names, flag = nil)
+  return [] if names.empty?
+
+  out, status = Open3.capture2('brew', 'info', '--json=v2', *[flag].compact, *names)
+  raise "exit #{status.exitstatus}" unless status.success?
+
+  parse_brew_info(JSON.parse(out))
+rescue StandardError => e
+  warn "brew info failed (#{names.join(' ')}): #{e}"
+  []
+end
+
+def parse_brew_info(json)
+  formulae = json.fetch('formulae', []).map { |info| formula_entry(info) }
+  casks    = json.fetch('casks', []).map { |info| cask_entry(info) }
+  formulae + casks
+end
+
+# 現在有効な (リンクされている) インストール済みの版
+def current_version(pkg)
+  pkg[:linked] || pkg[:installed].last
+end
+
+# version:     アップストリームの版 (OSV のタグ推定に使う)
+# pkg_version: Homebrew 上の版 = version + revision (表示・インストール後の照合に使う)
+# installed:   インストール済みの版の一覧 (revision 付き)
+def formula_entry(info)
+  version  = info.dig('versions', 'stable')
+  revision = info['revision'].to_i
+  {
+    name: info['full_name'], short_name: info['name'], cask: false,
+    version: version, pkg_version: revision.positive? ? "#{version}_#{revision}" : version,
+    installed: Array(info['installed']).map { |keg| keg['version'] }, linked: info['linked_keg'],
+    repo: github_repo_for_tap(info['tap']), path: info['ruby_source_path']
+  }
+end
+
+def cask_entry(info)
+  {
+    name: info['full_token'], short_name: info['token'], cask: true,
+    version: info['version'], pkg_version: info['version'],
+    installed: Array(info['installed']), linked: info['installed'],
+    repo: github_repo_for_tap(info['tap']), path: info['ruby_source_path']
+  }
+end
+
+# ---------------------------------------------------------------------------
+# HTTP
+
+def http_request(url, post_body: nil, limit: 5)
+  raise 'リダイレクト上限超過' if limit.zero?
+
+  res = send_http(URI(url), post_body)
   case res
   when Net::HTTPSuccess
-    JSON.parse(res.body)
+    res.body
   when Net::HTTPRedirection
-    fetch_json(URI.join(url, res['location']).to_s, limit - 1)
+    http_request(URI.join(url, res['location']).to_s, post_body: post_body, limit: limit - 1)
+  else
+    raise "HTTP #{res.code}"
   end
-rescue => e
-  warn "fetch failed (#{url}): #{e}"
+end
+
+def send_http(uri, post_body)
+  headers = { 'User-Agent' => USER_AGENT }
+  Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https', open_timeout: 10, read_timeout: 30) do |http|
+    if post_body
+      http.post(uri.request_uri, post_body, headers.merge('Content-Type' => 'application/json'))
+    else
+      http.get(uri.request_uri, headers)
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# 熟成期間の起点 (版の導入日時)
+
+def gh_api(endpoint)
+  out, status = Open3.capture2('gh', 'api', endpoint)
+  raise "gh api exit #{status.exitstatus}" unless status.success?
+
+  JSON.parse(out)
+end
+
+# path を変更したコミットを新しい順に返す: [{ sha:, date: }, ...]
+def github_commits(repo, path, gh_available)
+  endpoint = "repos/#{repo}/commits?path=#{path}&per_page=#{COMMIT_SCAN_LIMIT}"
+  json = gh_available ? gh_api(endpoint) : JSON.parse(http_request("https://api.github.com/#{endpoint}"))
+  json.map { |commit| { sha: commit['sha'], date: Time.parse(commit.dig('commit', 'committer', 'date')) } }
+rescue StandardError => e
+  warn "github_commits failed (#{repo}/#{path}): #{e}"
   nil
 end
 
-def github_commit_date(repo, filepath, gh_available)
-  if gh_available
-    out, status = Open3.capture2('gh', 'api', "repos/#{repo}/commits?path=#{filepath}&per_page=1")
-    unless status.success?
-      warn "gh api failed (#{repo}/#{filepath})"
-      return nil
-    end
-    JSON.parse(out)&.first&.dig('commit', 'committer', 'date')
-  else
-    fetch_json("https://api.github.com/repos/#{repo}/commits?path=#{filepath}&per_page=1")
-      &.first&.dig('commit', 'committer', 'date')
-  end
-rescue => e
-  warn "github_commit_date failed (#{repo}/#{filepath}): #{e}"
+def fetch_source(repo, sha, path)
+  http_request("https://raw.githubusercontent.com/#{repo}/#{sha}/#{path}")
+rescue StandardError => e
+  warn "fetch failed (#{repo}@#{sha[0, 7]}/#{path}): #{e}"
   nil
 end
 
-options = { dry_run: false, maturity_days: 7 }
-OptionParser.new do |o|
-  o.banner = 'Usage: brew-safe-upgrade [options] [パッケージ名...]'
-  o.on('--dry-run', '実際にはアップグレードしない')          { options[:dry_run] = true }
-  o.on('--maturity-days N', Integer, '熟成期間（日数）。デフォルト: 7') { |n| options[:maturity_days] = n }
-end.parse!
+# 配布物の中身を決める行 (version / revision / url / sha256) を抜き出す。
+# version と revision の変化に加え、同一バージョンでのソース差し替え (sha256 の変更) も版の変化とみなす。
+def version_fingerprint(src)
+  src.gsub(IGNORED_BLOCKS, '').scan(FINGERPRINT_LINE).map(&:strip)
+end
 
-dry_run       = options[:dry_run]
-maturity_days = options[:maturity_days]
-gh_available  = !!system('gh', '--version', out: File::NULL, err: File::NULL)
-now           = Time.now.to_i
+def days_since(time, now)
+  ((now - time) / SECONDS_PER_DAY).floor
+end
 
-puts "=== brew-safe-upgrade (熟成期間: #{maturity_days}日) ==="
-puts
+# 現在の版が tap に入ったコミットの日時を返す。
+# 戻り値: [Time, 下限か] / 取得不能なら nil
+#   「下限」= 走査を途中で打ち切ったため、実際の導入日はこれより古い可能性がある。
+#   どこで打ち切っても、返す日時は導入日以降 (= 経過日数を過大評価しない) なので安全側に倒れる。
+def version_introduced_at(pkg, gh_available, maturity_days, now)
+  commits = github_commits(pkg[:repo], pkg[:path], gh_available)
+  head    = commits&.first
+  return nil if head.nil?
 
-puts "formulae情報を更新中..."
-system('brew', 'update', '--quiet')
+  current = fetch_fingerprint(pkg, head)
+  return [head[:date], true] if current.nil?
 
-packages =
-  if ARGV.any?
-    ARGV.map { |name| { name: name, cask: false } }
-  else
-    [['--formula', false], ['--cask', true]].flat_map do |flag, cask|
-      collect_outdated(flag).map { |name| { name: name, cask: cask } }
+  commit, lower_bound = find_introduction(pkg, commits, current, now - (maturity_days * SECONDS_PER_DAY))
+  [commit[:date], lower_bound]
+end
+
+# commit 時点の版の fingerprint を返す。取得できなければ nil
+def fetch_fingerprint(pkg, commit)
+  src = fetch_source(pkg[:repo], commit[:sha], pkg[:path])
+  src && version_fingerprint(src)
+end
+
+# commits を新しい順に遡り、版 (fingerprint) が current と同じである最古のコミットを返す。
+# 戻り値: [commit, 下限か]
+def find_introduction(pkg, commits, current, cutoff)
+  commits.each_cons(2) do |newer, older|
+    # この時点で熟成済みと分かれば、それ以上遡る必要はない
+    return [newer, true] if newer[:date] <= cutoff
+
+    fingerprint = fetch_fingerprint(pkg, older)
+    return [newer, true] if fingerprint.nil?
+    return [newer, false] if fingerprint != current
+  end
+  # 履歴をすべて見た (ファイル作成時から同じ版) か、上限に達したか
+  [commits.last, commits.size >= COMMIT_SCAN_LIMIT]
+end
+
+# ---------------------------------------------------------------------------
+# 脆弱性 (ゼロデイ対応)
+
+# brew vulns でインストール済み formula の既知脆弱性を取得する。
+# 戻り値: { findings: { 名前 => finding }, skipped: [名前...] } / 実行不能なら nil
+def scan_vulns(names)
+  return { findings: {}, skipped: [] } if names.empty?
+
+  # 脆弱性が見つかると非 0 で終了するため、終了コードではなく JSON の可否で判定する
+  out, = Open3.capture2('brew', 'vulns', '--json', *names, err: File::NULL)
+  json = JSON.parse(out)
+  { findings: json.fetch('findings', []).to_h { |finding| [finding['formula'], finding] },
+    skipped: json.fetch('skipped_formulae', []) }
+rescue StandardError => e
+  warn "brew vulns failed: #{e}"
+  nil
+end
+
+# OSV.dev で repo_url の tag に該当する脆弱性 ID (alias を含む) を返す。取得不能なら nil
+def osv_vuln_ids(repo_url, tag)
+  body = { package: { name: repo_url, ecosystem: 'GIT' }, version: tag }.to_json
+  json = JSON.parse(http_request('https://api.osv.dev/v1/query', post_body: body))
+  # 結果が複数ページにわたる場合は全件を確認できないため、判定不能として扱う
+  return nil if json['next_page_token']
+
+  (json['vulns'] || []).flat_map { |vuln| vuln_ids(vuln) }
+rescue StandardError => e
+  warn "OSV query failed (#{repo_url}@#{tag}): #{e}"
+  nil
+end
+
+def vuln_ids(vuln)
+  [vuln['id'], *vuln['aliases']]
+end
+
+def label_vulns(vulns, note)
+  vulns.map { |vuln| "#{vuln['id']} [#{vuln['severity']}] #{vuln['summary']} (#{note})" }
+end
+
+# 新しい版のタグを、インストール済みの版のタグから推定して (例: v0.74.5 → v0.75.0)
+# OSV に問い合わせる。推定・取得できなければ nil
+def candidate_vuln_ids(pkg, finding)
+  installed_version = finding['version'].to_s
+  installed_tag     = finding['tag'].to_s
+  return nil if installed_version.empty? || !installed_tag.include?(installed_version)
+
+  osv_vuln_ids(finding['repo_url'], installed_tag.sub(installed_version, pkg[:version].to_s))
+end
+
+# 脆弱性を [自動短縮の対象となる深刻度のもの, それ以外] に分ける
+def partition_by_severity(finding)
+  finding.fetch('vulnerabilities', []).partition do |vuln|
+    EXPEDITE_SEVERITIES.include?(vuln['severity'].to_s.upcase)
+  end
+end
+
+# 1 パッケージ分の脆弱性情報を評価する。
+# 戻り値: { expedite: [自動短縮の根拠となる脆弱性 ID], warnings: [警告文] }
+def assess_vulns(pkg, finding)
+  severe, others = partition_by_severity(finding)
+  warnings = label_vulns(others, '深刻度が自動短縮の対象外')
+  return { expedite: [], warnings: warnings } if severe.empty?
+
+  fixed, unfixed, note = partition_by_fix(pkg, finding, severe)
+  { expedite: fixed.map { |vuln| vuln['id'] }, warnings: warnings + label_vulns(unfixed, note) }
+end
+
+# 新しい版で解消されるかで分ける。戻り値: [解消, 未解消, 未解消の注記]
+def partition_by_fix(pkg, finding, vulns)
+  remaining = candidate_vuln_ids(pkg, finding)
+  return [[], vulns, '新しい版での解消を確認できず'] if remaining.nil?
+
+  fixed, unfixed = vulns.partition { |vuln| (vuln_ids(vuln) & remaining).empty? }
+  [fixed, unfixed, '新しい版でも未解消']
+end
+
+# ---------------------------------------------------------------------------
+# 判定
+
+# 1 パッケージ分の判定結果
+#   route: :manual (--expedite) / :auto (セキュリティ修正) / :normal
+#   age:   版の導入からの経過日数 (不明なら nil)
+Decision = Struct.new(:pkg, :route, :evidence, :required, :age, :lower_bound) do
+  def unknown?
+    age.nil? && route != :manual
+  end
+
+  def ready?
+    route == :manual || (!age.nil? && age >= required)
+  end
+
+  def summary
+    "#{pkg[:name]}: #{pkg[:pkg_version] || '?'} (#{age_label})#{route_label}"
+  end
+
+  private
+
+  def age_label
+    age.nil? ? '経過日数不明' : "#{age}日#{'以上' if lower_bound}経過"
+  end
+
+  def route_label
+    case route
+    when :manual then ' ⚡手動'
+    when :auto   then " ⚡#{evidence.join(',')}"
+    else ''
+    end
+  end
+end
+
+# pkg が names (フルネームまたは短い名前) のいずれかに該当するか
+def package_listed?(pkg, names)
+  names.any? { |name| [pkg[:name], pkg[:short_name]].include?(name) }
+end
+
+def warn_unmatched_expedites(expedite_names, packages)
+  expedite_names.each do |name|
+    next if packages.any? { |pkg| package_listed?(pkg, [name]) }
+
+    warn "  ⚠ --expedite #{name}: アップグレード対象に含まれていません → 無視"
+  end
+end
+
+# 対象パッケージを集め、熟成期間に照らして判定する
+class Planner
+  attr_reader :upgrade_list
+
+  def initialize(options, names)
+    @options       = options
+    @names         = names
+    @expedite_days = [SECURITY_EXPEDITE_DAYS, options[:maturity_days]].min
+    @gh_available  = system('gh', '--version', out: File::NULL, err: File::NULL) || false
+    @now           = Time.now
+    @upgrade_list  = []
+    @skipped       = 0
+    @warnings      = {}
+    @manual        = []
+  end
+
+  # 戻り値: 判定対象があれば true
+  def run
+    update_brew
+    packages = collect_packages
+    return false if packages.empty?
+
+    warn_unmatched_expedites(@options[:expedite], packages)
+    scan_security(packages)
+    packages.each { |pkg| manual_only?(pkg) ? hold_manual(pkg) : report(decide(pkg)) }
+    print_summary
+    true
+  end
+
+  private
+
+  def update_brew
+    puts "=== #{COMMAND_NAME} (熟成期間: #{@options[:maturity_days]}日 / セキュリティ修正: #{@expedite_days}日) ==="
+    puts
+    puts 'formulae情報を更新中...'
+    system('brew', 'update', '--quiet')
+  end
+
+  def collect_packages
+    return %w[--formula --cask].flat_map { |flag| brew_info(collect_outdated(flag), flag) } if @names.empty?
+
+    # 名前ごとに問い合わせる (存在しない名前が 1 つあっても他を巻き込まないように)。
+    # formula / cask の判別は brew info に任せる
+    (@names | @options[:expedite]).flat_map do |name|
+      brew_info([name]).tap { |info| warn "  ⚠ #{name}: パッケージ情報を取得できません → 対象外" if info.empty? }
     end
   end
 
-if packages.empty?
-  puts "アップグレード対象のパッケージはありません。"
-  exit 0
-end
-
-upgrade_list = []
-skip_list    = []
-
-packages.each do |pkg|
-  name    = pkg[:name]
-  is_cask = pkg[:cask]
-
-  if is_cask
-    data           = fetch_json("https://formulae.brew.sh/api/cask/#{name}.json")
-    latest_version = data&.dig('version') || '?'
-    repo           = 'Homebrew/homebrew-cask'
-    filepath       = "Casks/#{name[0]}/#{name}.rb"
-  else
-    data           = fetch_json("https://formulae.brew.sh/api/formula/#{name}.json")
-    latest_version = data&.dig('versions', 'stable') || '?'
-    repo           = 'Homebrew/homebrew-core'
-    filepath       = "Formula/#{name[0]}/#{name}.rb"
+  def expedited?(pkg)
+    package_listed?(pkg, @options[:expedite])
   end
 
-  commit_date = github_commit_date(repo, filepath, gh_available)
-
-  if commit_date.to_s.empty?
-    puts "  ⚠ #{name}: リリース日取得不可 → スキップ"
-    skip_list << "#{name}(日付不明)"
-    next
+  # MANUAL_PACKAGES に含まれ、--expedite で明示されていないもの
+  def manual_only?(pkg)
+    package_listed?(pkg, MANUAL_PACKAGES) && !expedited?(pkg)
   end
 
-  age_days = (now - Time.parse(commit_date).to_i) / 86400
+  # 熟成期間の判定はせず (GitHub への問い合わせも不要)、脆弱性の警告だけ記録して手動対応に回す
+  def hold_manual(pkg)
+    assess(pkg)
+    puts "  - #{pkg[:name]}: #{pkg[:pkg_version] || '?'} → 手動対応 (MANUAL_PACKAGES)"
+    @manual << pkg
+  end
 
-  if age_days >= maturity_days
-    puts "  ✓ #{name}: #{latest_version} (#{age_days}日経過) → アップグレード対象"
-    upgrade_list << pkg
-  else
-    remaining = maturity_days - age_days
-    puts "  ✗ #{name}: #{latest_version} (#{age_days}日経過) → 熟成待ち (あと#{remaining}日)"
-    skip_list << "#{name}(#{age_days}日)"
+  def scan_security(packages)
+    puts '既知の脆弱性を確認中...'
+    @formula_names = packages.reject { |pkg| pkg[:cask] }.map { |pkg| pkg[:short_name] }
+    @casks         = packages.select { |pkg| pkg[:cask] }.map { |pkg| pkg[:name] }
+    @vulns         = scan_vulns(@formula_names)
+    puts
+  end
+
+  # 脆弱性を評価して警告を記録し、自動短縮の根拠となる脆弱性 ID を返す
+  def assess(pkg)
+    finding = @vulns&.dig(:findings, pkg[:short_name])
+    return [] unless finding
+
+    result = assess_vulns(pkg, finding)
+    @warnings[pkg[:name]] = result[:warnings] if result[:warnings].any?
+    result[:expedite]
+  end
+
+  # 熟成期間の決定: 手動指定 > 自動短縮 > 通常
+  def route_for(pkg)
+    expedite_ids = assess(pkg)
+    if expedited?(pkg)
+      [:manual, @options[:reason], 0]
+    elsif expedite_ids.any?
+      [:auto, expedite_ids, @expedite_days]
+    else
+      [:normal, nil, @options[:maturity_days]]
+    end
+  end
+
+  def decide(pkg)
+    route, evidence, required = route_for(pkg)
+    introduced = (version_introduced_at(pkg, @gh_available, required, @now) if pkg[:repo] && pkg[:path])
+    age = introduced && days_since(introduced[0], @now)
+    Decision.new(pkg, route, evidence, required, age, introduced&.last)
+  end
+
+  def report(decision)
+    if decision.ready?
+      puts "  ✓ #{decision.summary} → アップグレード対象"
+      @upgrade_list << decision
+    else
+      puts "  #{hold_message(decision)}"
+      @skipped += 1
+    end
+  end
+
+  def hold_message(decision)
+    return "⚠ #{decision.pkg[:name]}: 版の導入日を取得できません → スキップ" if decision.unknown?
+
+    "✗ #{decision.summary} → 熟成待ち (あと#{decision.required - decision.age}日)"
+  end
+
+  def print_summary
+    print_security_warnings(@warnings)
+    print_unscanned((@vulns ? @vulns[:skipped] : @formula_names) + @casks)
+    print_manual_packages(@manual)
+    puts
+    puts '=== 結果 ==='
+    puts "アップグレード: #{@upgrade_list.size}件"
+    puts "スキップ:       #{@skipped}件"
+    puts "手動対応:       #{@manual.size}件" if @manual.any?
   end
 end
 
-puts
-puts "=== 結果 ==="
-puts "アップグレード: #{upgrade_list.size}件"
-puts "スキップ:       #{skip_list.size}件"
+def print_manual_packages(packages)
+  return if packages.empty?
 
-exit 0 if upgrade_list.empty?
-
-puts
-if dry_run
-  puts "[dry-run] 以下がアップグレードされます:"
-  upgrade_list.each { |pkg| puts "  #{pkg[:name]}#{' (cask)' if pkg[:cask]}" }
-else
-  puts "アップグレード実行中..."
-  by_type    = upgrade_list.group_by { |pkg| pkg[:cask] }
-  names      = by_type.fetch(false, []).map { |pkg| pkg[:name] }
-  cask_names = by_type.fetch(true,  []).map { |pkg| pkg[:name] }
-  failed  = false
-  failed |= !system('brew', 'upgrade', *names)                  unless names.empty?
-  failed |= !system('brew', 'upgrade', '--cask', *cask_names)   unless cask_names.empty?
-  exit 1 if failed
+  puts
+  puts '=== 手動対応が必要なパッケージ (MANUAL_PACKAGES: 熟成期間による自動判定の対象外) ==='
+  packages.each { |pkg| puts "  #{pkg[:name]}: #{current_version(pkg) || '未インストール'} → #{pkg[:pkg_version]}" }
+  puts "  → リリース内容を確認のうえ更新する場合: #{COMMAND_NAME} --expedite <pkg> --reason \"...\""
 end
+
+def print_security_warnings(warnings_by_package)
+  return if warnings_by_package.empty?
+
+  puts
+  puts '=== セキュリティ警告 (自動短縮されていない既知脆弱性) ==='
+  warnings_by_package.each do |name, warnings|
+    puts "  #{name}:"
+    warnings.each { |warning| puts "    - #{warning}" }
+  end
+  puts "  → 早急な適用が必要と判断した場合: #{COMMAND_NAME} --expedite <pkg> --reason \"...\""
+end
+
+def print_unscanned(names)
+  return if names.empty?
+
+  puts
+  puts "脆弱性スキャン対象外: #{names.join(', ')}"
+end
+
+# ---------------------------------------------------------------------------
+# 実行・照合・履歴
+
+# 判定済みのパッケージをアップグレードし、判定した版が入ったかを照合して履歴に残す
+class Upgrader
+  def initialize(decisions)
+    @decisions = decisions
+  end
+
+  # 戻り値: すべて成功し、判定どおりの版が入れば true
+  def run
+    puts 'アップグレード実行中...'
+    formulae, casks = @decisions.partition { |decision| !decision.pkg[:cask] }
+    results    = { false => brew_upgrade(formulae), true => brew_upgrade(casks, '--cask') }
+    entries    = history_entries(results)
+    mismatches = entries.reject { |entry| entry[:verified] }
+    append_history(entries)
+    print_mismatches(mismatches)
+    !results.value?(false) && mismatches.empty?
+  end
+
+  private
+
+  # 判定は冒頭の brew update 時点のデータで行った。upgrade 中に auto-update で
+  # データが進むと、判定していない版が入りうるため、実行中はデータを固定する
+  def brew_upgrade(decisions, *flags)
+    return nil if decisions.empty?
+
+    names = decisions.map { |decision| decision.pkg[:name] }
+    system({ 'HOMEBREW_NO_AUTO_UPDATE' => '1' }, 'brew', 'upgrade', *flags, *names)
+  end
+
+  def installed_now
+    formulae, casks = @decisions.map(&:pkg).partition { |pkg| !pkg[:cask] }
+    (brew_info(formulae.map { |pkg| pkg[:name] }, '--formula') + brew_info(casks.map { |pkg| pkg[:name] }, '--cask'))
+      .to_h { |pkg| [pkg[:name], pkg] }
+  end
+
+  def history_entries(results)
+    installed = installed_now
+    @decisions.map { |decision| history_entry(decision, installed[decision.pkg[:name]], results[decision.pkg[:cask]]) }
+  end
+
+  # current: upgrade 後に取得したパッケージ情報 (取得できなければ nil)
+  def history_entry(decision, current, success)
+    pkg = decision.pkg
+    {
+      time: Time.now.iso8601, package: pkg[:name], cask: pkg[:cask],
+      from: current_version(pkg), to: pkg[:pkg_version], installed: current && current_version(current),
+      verified: Array(current&.dig(:installed)).include?(pkg[:pkg_version]),
+      route: decision.route.to_s, evidence: decision.evidence, success: success
+    }
+  end
+
+  def append_history(entries)
+    FileUtils.mkdir_p(STATE_DIR)
+    File.open(HISTORY_FILE, 'a') { |file| entries.each { |entry| file.puts(entry.to_json) } }
+  rescue StandardError => e
+    warn "履歴の記録に失敗しました (#{HISTORY_FILE}): #{e}"
+  end
+
+  def print_mismatches(mismatches)
+    return if mismatches.empty?
+
+    puts
+    puts '=== ⚠ 判定した版と異なる版がインストールされています ==='
+    mismatches.each { |entry| puts "  #{entry[:package]}: 判定 #{entry[:to]} / 実際 #{entry[:installed] || '不明'}" }
+    puts '  → 意図しない版の可能性があります。brew info で確認してください'
+  end
+end
+
+# ---------------------------------------------------------------------------
+# main
+
+def option_parser(options)
+  OptionParser.new do |o|
+    o.banner = "Usage: #{COMMAND_NAME} [options] [パッケージ名...]"
+    o.on('--dry-run', '実際にはアップグレードしない') { options[:dry_run] = true }
+    o.on('--maturity-days N', Integer, '熟成期間（日数）。デフォルト: 7') { |n| options[:maturity_days] = n }
+    o.on('--expedite PKG', '指定パッケージの熟成期間をこの実行に限り 0 日にする（複数指定可。--reason 必須）') do |name|
+      options[:expedite] << name
+    end
+    # 説明文を "-" で始めると OptionParser がスイッチ定義と解釈するため注意
+    o.on('--reason TEXT', 'expedite の理由（履歴に記録される）') { |text| options[:reason] = text }
+  end
+end
+
+def parse_options(argv)
+  options = { dry_run: false, maturity_days: 7, expedite: [], reason: nil }
+  option_parser(options).parse!(argv)
+  abort 'エラー: --expedite を使う場合は --reason で理由を指定してください' if options[:expedite].any? && options[:reason].to_s.strip.empty?
+  options
+end
+
+def print_dry_run(decisions)
+  puts '[dry-run] 以下がアップグレードされます:'
+  decisions.each { |decision| puts "  #{decision.pkg[:name]}#{' (cask)' if decision.pkg[:cask]}" }
+  true
+end
+
+# 戻り値: 正常終了なら true
+def main(argv)
+  options = parse_options(argv)
+  planner = Planner.new(options, argv)
+  unless planner.run
+    puts 'アップグレード対象のパッケージはありません。'
+    return true
+  end
+  return true if planner.upgrade_list.empty?
+
+  puts
+  options[:dry_run] ? print_dry_run(planner.upgrade_list) : Upgrader.new(planner.upgrade_list).run
+end
+
+exit(main(ARGV) ? 0 : 1)
