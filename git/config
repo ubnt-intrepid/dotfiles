@@ -40,6 +40,12 @@
   safecrlf      = false
   symlinks      = true
 
+[safe]
+  ; 作業ツリー内に埋め込まれた bare リポジトリを暗黙に検出しない
+  ; (clone したリポジトリ内に悪意ある config を持つ bare リポジトリを仕込まれた場合のコード実行対策)
+  ; bare リポジトリを操作する際は --git-dir または GIT_DIR で明示する
+  bareRepository = explicit
+
 [merge]
   ff    = false
   tool  = vimdiff
