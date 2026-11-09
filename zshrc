@@ -83,9 +83,36 @@ if (( $+commands[fzf] )); then
 fi
 
 
-# --- starship ---
+# --- prompt ---
 if (( $+commands[starship] )); then
   eval "$(starship init zsh)"
+else
+  autoload -Uz vcs_info add-zsh-hook
+
+  zstyle ':vcs_info:*' enable git  # git 以外のバックエンドは有効にしないこと (hg 等はリポジトリ内の設定から拡張や hook を読み込む)
+  zstyle ':vcs_info:*' formats '%b'
+  zstyle ':vcs_info:*' actionformats '%b|%a'
+
+  # core.fsmonitor に悪意のあるスクリプトが混入していた場合のコード実行を防止する
+  zstyle ':vcs_info:*' check-for-changes false
+  zstyle ':vcs_info:*' check-for-staged-changes false
+
+  # 上述の zstyle を変更した際は、index を読むコマンド (status, diff 等) が増えていないか再確認すること (GIT_TRACE を設定し、設定の安全性を検証すべき)
+
+  function __prompt_precmd() {
+    vcs_info
+    # noprompt_subst のため precmd 内で直接組み立てる (ブランチ名中の % はエスケープする)
+    if [[ -n $vcs_info_msg_0_ ]]; then
+      RPROMPT="%F{magenta}${vcs_info_msg_0_//\%/%%}%f"
+    else
+      RPROMPT=''
+    fi
+  }
+  add-zsh-hook precmd __prompt_precmd
+
+  # [user@host (SSH 接続時のみ)] カレントディレクトリ [終了ステータス (非0時のみ)] %/#
+  PROMPT=$'%F{cyan}%~%f\n%(?.%F{green}.%F{red}[%?] )%#%f '
+  [[ -n $SSH_CONNECTION ]] && PROMPT="%F{yellow}%n@%m%f $PROMPT"
 fi
 
 
