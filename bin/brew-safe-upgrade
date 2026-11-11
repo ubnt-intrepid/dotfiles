@@ -265,8 +265,16 @@ def vuln_ids(vuln)
   [vuln['id'], *vuln['aliases']]
 end
 
+# 警告 1 件分: { text: 表示文, url: 詳細ページ }
 def label_vulns(vulns, note)
-  vulns.map { |vuln| "#{vuln['id']} [#{vuln['severity']}] #{vuln['summary']} (#{note})" }
+  vulns.map do |vuln|
+    { text: "#{vuln['id']} [#{vuln['severity']}] #{vuln['summary']} (#{note})", url: osv_url(vuln['id']) }
+  end
+end
+
+# OSV.dev の詳細ページ (GHSA / CVE / OSV など、どの ID 形式でも引ける)
+def osv_url(id)
+  "https://osv.dev/vulnerability/#{URI.encode_www_form_component(id.to_s)}"
 end
 
 # 新しい版のタグを、インストール済みの版のタグから推定して (例: v0.74.5 → v0.75.0)
@@ -498,7 +506,10 @@ def print_security_warnings(warnings_by_package)
   puts '=== セキュリティ警告 (自動短縮されていない既知脆弱性) ==='
   warnings_by_package.each do |name, warnings|
     puts "  #{name}:"
-    warnings.each { |warning| puts "    - #{warning}" }
+    warnings.each do |warning|
+      puts "    - #{warning[:text]}"
+      puts "      #{warning[:url]}"
+    end
   end
   puts "  → 早急な適用が必要と判断した場合: #{COMMAND_NAME} --expedite <pkg> --reason \"...\""
 end
