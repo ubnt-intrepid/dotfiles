@@ -2,3 +2,6 @@
 
 [settings]
 idiomatic_version_file_enable_tools = ["node"]
+minimum_release_age = "7d"
+self_update.minimum_release_age = "7d"
+paranoid = ["env_files", "plugins", "provenance"]
