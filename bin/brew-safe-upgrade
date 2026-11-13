@@ -45,6 +45,8 @@ MANUAL_PACKAGES = %w[
 
 COMMAND_NAME = 'brew safe-upgrade'
 USER_AGENT = 'brew-safe-upgrade/1.0'
+# 熟成期間のデフォルト (日)。--maturity-days で実行ごとに上書きできる
+DEFAULT_MATURITY_DAYS = 7
 # 自動短縮時の熟成期間 (日)
 SECURITY_EXPEDITE_DAYS = 1
 # 自動短縮の対象とする深刻度
@@ -599,7 +601,7 @@ def option_parser(options)
   OptionParser.new do |o|
     o.banner = "Usage: #{COMMAND_NAME} [options] [パッケージ名...]"
     o.on('--dry-run', '実際にはアップグレードしない') { options[:dry_run] = true }
-    o.on('--maturity-days N', Integer, '熟成期間（日数）。デフォルト: 7') { |n| options[:maturity_days] = n }
+    o.on('--maturity-days N', Integer, "熟成期間（日数）。デフォルト: #{DEFAULT_MATURITY_DAYS}") { |n| options[:maturity_days] = n }
     o.on('--expedite PKG', '指定パッケージの熟成期間をこの実行に限り 0 日にする（複数指定可。--reason 必須）') do |name|
       options[:expedite] << name
     end
@@ -609,7 +611,7 @@ def option_parser(options)
 end
 
 def parse_options(argv)
-  options = { dry_run: false, maturity_days: 7, expedite: [], reason: nil }
+  options = { dry_run: false, maturity_days: DEFAULT_MATURITY_DAYS, expedite: [], reason: nil }
   option_parser(options).parse!(argv)
   abort 'エラー: --expedite を使う場合は --reason で理由を指定してください' if options[:expedite].any? && options[:reason].to_s.strip.empty?
   options
