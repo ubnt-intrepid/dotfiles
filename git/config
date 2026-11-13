@@ -3,7 +3,6 @@
   br  = branch
   cl  = clone
   cm  = commit
-  co  = checkout
   df  = diff
   dfi = diff --cached
   fa  = fetch --all
@@ -19,8 +18,8 @@
   branches  = branch -a
   tags      = tag
   stashes   = stash list
-  unstage   = reset -q HEAD --
-  discard   = checkout --
+  unstage   = restore --staged --
+  discard   = restore --
   uncommit  = reset --mixed HEAD~
   amend     = commit --amend
   graph     = log --graph --all --format=format:'%Cgreen%h %Creset• %<(40,trunc)%s (%cN, %cr) %Cred%d'
@@ -33,12 +32,9 @@
   ddfi  = ddiff --cached
 
 [core]
-  preloadindex  = true
-  fscache       = true
-  editor        = ${EDITOR:-vi}
-  autocrlf      = input
-  safecrlf      = false
-  symlinks      = true
+  ; untracked ファイル検出結果をディレクトリ単位でキャッシュする
+  ; (core.fsmonitor は常駐プロセスが増えるため、必要なリポジトリで個別に有効化する)
+  untrackedCache = true
 
 [safe]
   ; 作業ツリー内に埋め込まれた bare リポジトリを暗黙に検出しない
@@ -46,26 +42,52 @@
   ; bare リポジトリを操作する際は --git-dir または GIT_DIR で明示する
   bareRepository = explicit
 
+[transfer]
+  ; fetch/clone/receive 時に受信オブジェクトを検証する (不正なパスや .gitmodules などの多層防御)
+  ; 古いリポジトリで弾かれる場合は fetch.fsck.<msg-id> = ignore で個別に除外する
+  fsckObjects = true
+
+[diff]
+  algorithm      = histogram
+  colorMoved     = plain
+  mnemonicPrefix = true
+  renames        = copies
+
 [merge]
-  ff    = false
   tool  = vimdiff
   conflictStyle = zdiff3
 
-[i18n]
-  filesEncoding = utf-8
-
 [init]
   defaultBranch = main
+
+[branch]
+  sort = -committerdate
+
+[tag]
+  sort = version:refname
+
+[column]
+  ui = auto
 
 [fetch]
   prune = true
 
 [push]
   default = current
+  autoSetupRemote = true
 
 [pull]
   ff = only
-  prune = true
+
+[rebase]
+  ; rebase -i 時に fixup!/squash!/amend! コミットを自動で並べ替える (--autosquash 相当)
+  ; autoSquash = true
+  ; rebase 時に途中にある他のブランチも追従させる (--update-refs 相当)
+  ; updateRefs = true
+
+[rerere]
+  ; conflict の解消結果を記録し、同じ conflict に再適用する
+  ; enabled = true
 
 [url "git@github.com:"]
   pushinsteadof = https://github.com/
