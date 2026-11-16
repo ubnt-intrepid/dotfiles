@@ -33,6 +33,7 @@
 require 'net/http'
 require 'json'
 require 'time'
+require 'date'
 require 'uri'
 require 'open3'
 require 'optparse'
@@ -319,35 +320,124 @@ end
 # ---------------------------------------------------------------------------
 # 判定
 
+# 判定結果の分類と表示ラベル
+CATEGORY_LABELS = {
+  matured: '熟成', security: 'セキュリティ', manual: '手動',
+  maturing: '熟成中', unknown: '導入日不明', held_manual: '手動 (MANUAL_PACKAGES)'
+}.freeze
+# 結果欄の内訳に使う短いラベル
+COUNT_LABELS = CATEGORY_LABELS.merge(held_manual: '手動').freeze
+UPGRADE_CATEGORIES = %i[matured security manual].freeze
+HOLD_CATEGORIES    = %i[maturing unknown held_manual].freeze
+
 # 1 パッケージ分の判定結果
-#   route: :manual (--expedite) / :auto (セキュリティ修正) / :normal
-#   age:   版の導入からの経過日数 (不明なら nil)
-Decision = Struct.new(:pkg, :route, :evidence, :required, :age, :lower_bound) do
-  def unknown?
-    age.nil? && route != :manual
+#   route:         :manual (--expedite) / :auto (セキュリティ修正) / :normal
+#   required:      この route で必要な熟成期間 (日)
+#   maturity_days: 通常の熟成期間 (日)
+#   introduced:    版の導入日時 (不明なら nil)
+#   age:           版の導入からの経過日数 (不明なら nil)
+Decision = Struct.new(:pkg, :route, :evidence, :required, :maturity_days, :introduced, :age, :lower_bound,
+                      keyword_init: true) do
+  # セキュリティ修正でも、短縮なしで熟成期間に達していれば「熟成」とする
+  def category
+    return :manual if route == :manual
+    return :unknown if age.nil?
+    return :maturing if age < required
+
+    route == :auto && age < maturity_days ? :security : :matured
   end
 
   def ready?
-    route == :manual || (!age.nil? && age >= required)
+    UPGRADE_CATEGORIES.include?(category)
   end
 
-  def summary
-    "#{pkg[:name]}: #{pkg[:pkg_version] || '?'} (#{age_label})#{route_label}"
+  # 経過時間の降順 (切り捨て前の導入日時で比較する)。不明は末尾に置く
+  def sort_key
+    [introduced ? 0 : 1, introduced.to_f, pkg[:name]]
+  end
+
+  def row
+    package_row(pkg, age_label, reason)
   end
 
   private
 
+  # 「+」の有無で桁がずれないよう、下限でない場合は空白で埋める
   def age_label
-    age.nil? ? '経過日数不明' : "#{age}日#{'以上' if lower_bound}経過"
+    age.nil? ? '' : "#{age}日#{lower_bound ? '+' : ' '}"
   end
 
-  def route_label
-    case route
-    when :manual then ' ⚡手動'
-    when :auto   then " ⚡#{evidence.join(',')}"
-    else ''
+  def reason
+    label  = CATEGORY_LABELS.fetch(category)
+    detail = reason_detail
+    extras = []
+    extras << fix_note if route == :auto && category != :security
+    extras << 'cask' if pkg[:cask]
+    "#{label}#{": #{detail}" if detail}#{" (#{extras.join(', ')})" if extras.any?}"
+  end
+
+  def reason_detail
+    case category
+    when :security then fix_note
+    when :manual   then evidence
+    when :maturing then remaining_label
     end
   end
+
+  # 「あと N日」は熟成期間に達する日付までの暦日数で数え、併記する日付と一致させる
+  def remaining_label
+    ready_at = introduced + (required * SECONDS_PER_DAY)
+    days     = (ready_at.to_date - Date.today).to_i
+    days.positive? ? "あと#{days}日 (#{ready_at.strftime('%m/%d')}〜)" : "本日 (#{ready_at.strftime('%m/%d %H:%M')}〜)"
+  end
+
+  def fix_note
+    "#{evidence.join(', ')} を修正"
+  end
+end
+
+# 一覧の 1 行: [名前, 現在の版, 新しい版, 経過日数, 理由]
+def package_row(pkg, age_label = '', reason = '')
+  [pkg[:name], current_version(pkg) || '-', pkg[:pkg_version] || '?', age_label, reason]
+end
+
+# sections: { 見出し => [行, ...] }。全セクションで列幅をそろえ、空のセクションは省く
+def print_sections(sections)
+  rows = sections.values.flatten(1)
+  return if rows.empty?
+
+  widths = rows.transpose.map { |column| column.map { |cell| display_width(cell) }.max }
+  sections.each do |title, section_rows|
+    next if section_rows.empty?
+
+    puts
+    puts "■ #{title}"
+    section_rows.each { |row| puts format_row(row, widths) }
+  end
+end
+
+def format_row(row, widths)
+  name, from, to, age, reason = row
+  "  #{pad(name, widths[0])}  #{pad(from, widths[1])} → #{pad(to, widths[2])}  " \
+    "#{pad(age, widths[3], right: true)}  #{reason}".rstrip
+end
+
+# 端末上の表示幅 (全角文字を 2 とみなす簡易版)
+def display_width(text)
+  text.each_char.sum { |char| char.ord > 0xFF ? 2 : 1 }
+end
+
+def pad(text, width, right: false)
+  space = ' ' * [width - display_width(text), 0].max
+  right ? space + text : text + space
+end
+
+# 例: "5件 (熟成 3 / セキュリティ 2)"
+def count_summary(categories, counts)
+  total     = categories.sum { |category| counts.fetch(category, 0) }
+  breakdown = categories.select { |category| counts.fetch(category, 0).positive? }
+                        .map { |category| "#{COUNT_LABELS.fetch(category)} #{counts[category]}" }
+  "#{total}件#{" (#{breakdown.join(' / ')})" if breakdown.any?}"
 end
 
 # pkg が names (フルネームまたは短い名前) のいずれかに該当するか
@@ -365,18 +455,19 @@ end
 
 # 対象パッケージを集め、熟成期間に照らして判定する
 class Planner
-  attr_reader :upgrade_list
-
   def initialize(options, names)
     @options       = options
     @names         = names
     @expedite_days = [SECURITY_EXPEDITE_DAYS, options[:maturity_days]].min
     @gh_available  = system('gh', '--version', out: File::NULL, err: File::NULL) || false
     @now           = Time.now
-    @upgrade_list  = []
-    @skipped       = 0
+    @decisions     = []
     @warnings      = {}
     @manual        = []
+  end
+
+  def upgrade_list
+    @decisions.select(&:ready?)
   end
 
   # 戻り値: 判定対象があれば true
@@ -387,7 +478,10 @@ class Planner
 
     warn_unmatched_expedites(@options[:expedite], packages)
     scan_security(packages)
-    packages.each { |pkg| manual_only?(pkg) ? hold_manual(pkg) : report(decide(pkg)) }
+    manual, targets = packages.partition { |pkg| manual_only?(pkg) }
+    manual.each { |pkg| hold_manual(pkg) }
+    puts "熟成期間を判定中... (#{targets.size}件)" if targets.any?
+    @decisions = targets.map { |pkg| decide(pkg) }
     print_summary
     true
   end
@@ -420,10 +514,9 @@ class Planner
     package_listed?(pkg, MANUAL_PACKAGES) && !expedited?(pkg)
   end
 
-  # 熟成期間の判定はせず (GitHub への問い合わせも不要)、脆弱性の警告だけ記録して手動対応に回す
+  # 熟成期間の判定はせず (GitHub への問い合わせも不要)、脆弱性の警告だけ記録して保留に回す
   def hold_manual(pkg)
     assess(pkg)
-    puts "  - #{pkg[:name]}: #{pkg[:pkg_version] || '?'} → 手動対応 (MANUAL_PACKAGES)"
     @manual << pkg
   end
 
@@ -459,46 +552,34 @@ class Planner
 
   def decide(pkg)
     route, evidence, required = route_for(pkg)
-    introduced = (version_introduced_at(pkg, @gh_available, required, @now) if pkg[:repo] && pkg[:path])
-    age = introduced && days_since(introduced[0], @now)
-    Decision.new(pkg, route, evidence, required, age, introduced&.last)
-  end
-
-  def report(decision)
-    if decision.ready?
-      puts "  ✓ #{decision.summary} → アップグレード対象"
-      @upgrade_list << decision
-    else
-      puts "  #{hold_message(decision)}"
-      @skipped += 1
-    end
-  end
-
-  def hold_message(decision)
-    return "⚠ #{decision.pkg[:name]}: 版の導入日を取得できません → スキップ" if decision.unknown?
-
-    "✗ #{decision.summary} → 熟成待ち (あと#{decision.required - decision.age}日)"
+    # 必要な熟成期間が短縮されていても通常の熟成期間まで遡る
+    # (短縮なしでも熟成済みだったかの判別と、経過日数での並べ替えのため)
+    scan_days  = [required, @options[:maturity_days]].max
+    introduced = (version_introduced_at(pkg, @gh_available, scan_days, @now) if pkg[:repo] && pkg[:path])
+    Decision.new(pkg: pkg, route: route, evidence: evidence, required: required,
+                 maturity_days: @options[:maturity_days], introduced: introduced&.first,
+                 age: introduced && days_since(introduced[0], @now), lower_bound: introduced&.last)
   end
 
   def print_summary
+    upgrades, holds = @decisions.sort_by(&:sort_key).partition(&:ready?)
+    manual_rows     = @manual.sort_by { |pkg| pkg[:name] }
+                             .map { |pkg| package_row(pkg, '', CATEGORY_LABELS[:held_manual]) }
+    print_sections('アップグレード' => upgrades.map(&:row), '保留' => holds.map(&:row) + manual_rows)
+    puts "  → 手動で更新する場合: #{COMMAND_NAME} --expedite <pkg> --reason \"...\"" if @manual.any?
     print_security_warnings(@warnings)
     print_unscanned((@vulns ? @vulns[:skipped] : @formula_names) + @casks)
-    print_manual_packages(@manual)
+    print_counts
+  end
+
+  def print_counts
+    counts = @decisions.group_by(&:category).transform_values(&:size)
+    counts[:held_manual] = @manual.size
     puts
     puts '=== 結果 ==='
-    puts "アップグレード: #{@upgrade_list.size}件"
-    puts "スキップ:       #{@skipped}件"
-    puts "手動対応:       #{@manual.size}件" if @manual.any?
+    puts "アップグレード: #{count_summary(UPGRADE_CATEGORIES, counts)}"
+    puts "保留:           #{count_summary(HOLD_CATEGORIES, counts)}"
   end
-end
-
-def print_manual_packages(packages)
-  return if packages.empty?
-
-  puts
-  puts '=== 手動対応が必要なパッケージ (MANUAL_PACKAGES: 熟成期間による自動判定の対象外) ==='
-  packages.each { |pkg| puts "  #{pkg[:name]}: #{current_version(pkg) || '未インストール'} → #{pkg[:pkg_version]}" }
-  puts "  → リリース内容を確認のうえ更新する場合: #{COMMAND_NAME} --expedite <pkg> --reason \"...\""
 end
 
 def print_security_warnings(warnings_by_package)
