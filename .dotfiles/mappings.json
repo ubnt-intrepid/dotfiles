@@ -3,6 +3,7 @@
     "ghostty": "~/.config/ghostty",
     "mise": "~/.config/mise",
     "nvim": "~/.config/nvim",
+    "pip": "~/.config/pip",
 
     "npmrc": "~/.npmrc"
 }
