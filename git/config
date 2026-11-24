@@ -97,6 +97,7 @@
 
 [user]
   name = Yusuke Sasaki
-  email = 7354350+ubnt-intrepid@users.noreply.github.com
+  email = me@ubnt-intrepid.dev
+  signingkey = 3540B8BADF477E60  # primary key
 
 # vim: set ft=gitconfig ts=2 sw=2 et :
